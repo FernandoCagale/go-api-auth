@@ -1,0 +1,2 @@
+DATASTORE_URL=postgresql://postgres:postgres@127.0.0.1:5432/api-auth?sslmode=disable
+PORT=3000

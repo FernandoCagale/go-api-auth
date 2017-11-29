@@ -1,96 +1,73 @@
 package main
 
 import (
-	"fmt"
-	"net/http"
 	"time"
 
-	jwt "github.com/dgrijalva/jwt-go"
+	"github.com/FernandoCagale/go-api-auth/src/checker"
+	"github.com/FernandoCagale/go-api-auth/src/config"
+	"github.com/FernandoCagale/go-api-auth/src/datastore"
+	"github.com/FernandoCagale/go-api-auth/src/handlers"
+	"github.com/FernandoCagale/go-api-auth/src/lib"
+	"github.com/jinzhu/gorm"
+
+	log "github.com/Sirupsen/logrus"
 	"github.com/labstack/echo"
 	"github.com/labstack/echo/middleware"
 )
 
-type JwtClaims struct {
-	Name string `json:"name"`
-	jwt.StandardClaims
-}
-
-type User struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
-}
-
-func mainUser(c echo.Context) error {
-	user := c.Get("user")
-	token := user.(*jwt.Token)
-
-	claims := token.Claims.(jwt.MapClaims)
-
-	fmt.Println("User Name:", claims["name"], "User ID:", claims["jti"])
-
-	return c.JSON(http.StatusOK, map[string]string{
-		"message": "informations",
-	})
-}
-
-func login(c echo.Context) error {
-	u := new(User)
-	if err := c.Bind(u); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"message": "Bad Request",
-		})
-	}
-
-	if u.Username == "jack" && u.Password == "1234" {
-
-		token, err := createJwtToken()
-		if err != nil {
-			return c.String(http.StatusInternalServerError, "something went wrong")
-		}
-
-		return c.JSON(http.StatusOK, map[string]string{
-			"access_token": token,
-			"expires_in":   "21600",
-			"token_type":   "Bearer",
-		})
-	}
-	return c.JSON(http.StatusUnauthorized, map[string]string{
-		"message": "Your username or password were wrong",
-	})
-}
-
-func createJwtToken() (string, error) {
-	claims := JwtClaims{
-		"jack",
-		jwt.StandardClaims{
-			Id:        "main_user_id",
-			ExpiresAt: time.Now().Add(24 * time.Hour).Unix(),
-		},
-	}
-
-	rawToken := jwt.NewWithClaims(jwt.SigningMethodHS512, claims)
-
-	token, err := rawToken.SignedString([]byte("secret"))
-	if err != nil {
-		return "", err
-	}
-
-	return token, nil
-}
-
 func main() {
-	e := echo.New()
+	var db *gorm.DB
+	env := config.LoadEnv()
+	app := echo.New()
 
-	userGroup := e.Group("/user")
+	go bindDatastore(app, db, env.DatastoreURL)
 
-	userGroup.Use(middleware.JWTWithConfig(middleware.JWTConfig{
+	app.Use(middleware.Logger())
+
+	defer db.Close()
+
+	checkers := map[string]checker.Checker{
+		"api":      checker.NewApi(),
+		"postgres": checker.NewPostgres(env.DatastoreURL),
+	}
+
+	healthzHandler := handlers.NewHealthzHandler(checkers)
+	app.GET("/health", healthzHandler.HealthzIndex)
+
+	userHandler := handlers.NewUserHandler()
+
+	app.POST("/login", userHandler.Login)
+	app.GET("/user", userHandler.GetAll)
+	app.POST("/user", userHandler.Save)
+
+	group := app.Group("/v1")
+
+	group.Use(middleware.JWTWithConfig(middleware.JWTConfig{
 		SigningMethod: "HS512",
 		SigningKey:    []byte("secret"),
 	}))
 
-	userGroup.GET("", mainUser)
+	group.GET("/user/:id", userHandler.Get)
+	group.PUT("/user/:id", userHandler.Update)
+	group.DELETE("/user/:id", userHandler.Delete)
 
-	e.POST("/login", login)
+	app.Logger.Fatal(app.Start(":" + env.Port))
+}
 
-	e.Logger.Fatal(e.Start(":8000"))
+func bindDatastore(app *echo.Echo, db *gorm.DB, url string) {
+	for {
+		db, err := datastore.New(url)
+		failOnError(err, "Failed to init dababase connection!")
+		if err == nil {
+			app.Use(lib.BindDb(db))
+			break
+		}
+		time.Sleep(time.Second * 5)
+	}
+}
+
+func failOnError(err error, msg string) {
+	if err != nil {
+		log.Info(msg)
+	}
 }

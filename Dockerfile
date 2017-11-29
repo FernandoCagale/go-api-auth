@@ -1,5 +1,9 @@
-FROM scratch
+FROM golang:1.9
 
-ADD build/api /api
+RUN mkdir -p /app
 
-ENTRYPOINT ["./api"]
+WORKDIR /app
+
+ADD bin/main /app/main
+
+ENTRYPOINT ["./main"]
